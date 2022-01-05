@@ -1,0 +1,464 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+## Programmare per soddisfare la propria curiosità: una sbirciata agli Academy Awards 
+
+Programmare è anche un modo per soddisfare la propria curiosità: tante volte qualcuno ha avuto la stessa curiosità prima di noi e se cerchiamo su Google troviamo la risposta, ma altre volte no! Programmare è quindi utile per soddisfare i nostri dubbi, soprattutto quando le informazioni da analizzare sono tante e una ricerca manuale diventa svantaggiosa.
+
+Per esempio, chi di voi non si è mai interessato alla Notte degli Oscar, l'evento annuale più famoso nel mondo del cinema, nel corso del quale vengono assegnati i premi Oscar? Uno pensa agli Oscar e gli potrebbe venire da chiedersi: chi è l'attore o l'attrice più giovane ad aver vinto un Oscar? Nel corso degli anni l'età media degli attori/trici vincitori/trici di premi Oscar si è abbassata? I film vincitori di Oscar ottengono dei rating mediamente quanto più alti? Quali sono i fattori che aumentano la probabilità di un attore/trice di ricevere un Oscar?
+
+Per rispondere a queste domande possiamo utilizzare il favoloso dataset messo a disposizione da [IMDb](https://github.com/awesomedata/awesome-public-datasets#machinelearning). Per chi non lo conoscesse [IMDb](https://it.wikipedia.org/wiki/Internet_Movie_Database) è il più famoso online dataset contenente informazioni relative a film, serie, videogiochi, etc. Tra le info contenute in IMDb più utilizzate vi sono il cast dei singoli film o il voto medio degli utenti.
+
+In questo blog post, utilizziamo questo dataset in combinazione con altri due dataset gratuitamente scaricabili online, [questo](https://www.openintro.org/data/index.php?data=oscars) dataset contenente i vincitori/trici di premi Oscar come migliori attori/trici dal 1929 al 2019, e [questo](https://www.kaggle.com/unanimad/the-oscar-award) dataset contenente tutte le nomination agli Oscar (sia quindi i candidati vincitori che non).
+Per l'analisi, abbiamo scelto come linguaggio di programmazione [R](https://it.wikipedia.org/wiki/R_(software)), tra i linguaggi di programmazione più utilizzati per l'analisi statistica di dati. 
+
+Per prima cosa impostiamo la **working directory**, ossia la cartella del computer in cui salveremo i dataset scaricati e l'output dell'esercitazione:
+
+```{r setting wd, echo=T, results='hide'}
+rm(list = ls())
+setwd('D:/Dati/Profili/m031988/Downloads/')
+```
+
+Lo step successivo consiste nel caricare i **packages** necessari per l'analisi, ovvero collezioni di funzioni specializzate nell'esecuzione di determinati task (per esempio, visualizzare i dati, fare analisi predittiva, manipolare i dati, etc):
+
+```{r echo=T, results='hide', warning=FALSE, message=FALSE}
+
+library(readr)
+library(data.table)
+library(stringr)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(ggfortify)
+library(rvest)
+library(jpeg)
+library(randomForest)
+require(caTools)
+
+
+```
+
+Dopo aver scaricato i dataset necessari e averli salvati nella working directory, li importiamo nella sessione di R che abbiamo aperto:
+
+```{r echo=T, results='hide', warning=FALSE, message=FALSE}
+# dataset contenente il cast completo per ogni film  
+title_prin <- read_csv("title_prin.csv",col_names = FALSE)
+colnames(title_prin) <- paste(c("tconst","ordering","nconst","category","job","characters"))
+
+# dataset contenente le informazioni relative a attori/trici
+name_basic <- read_csv("name_basics.csv",col_names = FALSE)
+colnames(name_basic) <- paste(c("nconst","primaryName","birthYear","deathYear","primaryProfession","knownForTitles"))
+
+# dataset contenente le informazioni relative ai film
+title_basic <- read_csv("title_basics.csv",col_names = FALSE)
+colnames(title_basic) <- paste(c("tconst","titleType","primaryTitle","originalTitle","isAdult","startYear","endYear","runtimeMinutes","genres"))
+
+# dataset contenente i rating di ciascun film
+title_rating <- read_tsv("title.ratings.tsv.gz")
+
+# dataset contenente i vincitori di premi Oscar come miglior attore/trice (per ciascun attore/trice soltanto il primo Oscar)
+oscar <- read.csv("firstoscars.csv")
+# dataset contenente le nomination agli Oscar
+nominees <- read.csv("the_oscar_award.csv")
+
+```
+
+Prima di buttarsi a capofitto nella programmazione è sempre utile dare una sbirciata ai dati: per esempio, quali variabili abbiamo nel dataset sugli Oscar? 
+
+```{r}
+head(oscar)
+names(oscar)
+```
+
+# Step 1: Manipolazione dei dati
+Per prima cosa selezioniamo all'interno dei dataset caricati le informazioni che ci interessano (*subsetting*):
+
+```{r echo=T, results='hide', warning=FALSE, message=FALSE}
+title_prin <- title_prin[title_prin$category=="actor"|title_prin$category=="actress",]
+```
+
+```{r echo=FALSE}
+nominees <- nominees[nominees$category=="ACTOR IN A LEADING ROLE"|nominees$category=="ACTRESS IN A LEADING ROLE"|nominees$category=="ACTOR"|nominees$category=="ACTRESS",]
+oscar$name[oscar$name=="Leonardo Di Caprio"] <- "Leonardo DiCaprio"
+oscar$name[oscar$name=="Elisabeth Taylor"] <- "Elizabeth Taylor"
+nominees$name[nominees$name=="Leonardo Di Caprio"] <- "Leonardo DiCaprio"
+nominees$name[nominees$name=="Elisabeth Taylor"] <- "Elizabeth Taylor"
+names(nominees)
+nominees <- nominees %>% rename(primaryTitle = names(.)[6])
+colnames <- paste(c("name","winner","primaryTitle"))
+nominees <- subset(nominees,select=colnames)
+```
+
+Successivamente uniamo il dataset contenente la lista di attori/trici in ciascun film con il dataset contenente le informazioni personali (per es. data e luogo di nascita) di ciascun attore/trice (*merge*):
+
+```{r echo=T, results='hide', warning=FALSE, message=FALSE}
+combo <- merge(title_prin,name_basic,all=FALSE)
+```
+
+Prima di unire questo dataset a sua volta con quello sui vincitori/trici di premi Oscar, è necessario rinominare la variabile contenente il nome dell'artista, essendo questa diversa nei due dataset (*rename*):
+
+```{r}
+names(combo)
+combo <- combo %>% rename(name = names(.)[7])
+names(combo)
+```
+
+A questo punto uniamo i due dataset in modo da ottenere un unico dataset e ci focalizziamo sui film realizzati da attori/trici aventi vinto nel corso della loro carriera un Academy Award. L'*opzione* "all=FALSE" passata al comando *merge* serve per trattenere nel dataset finale soltanto gli attori/trici presenti in *entrambi* i dataset iniziali.
+
+```{r}
+combo_oscar <- merge(combo,oscar,all=FALSE)
+# quanti attori/trici nel dataset?
+nrow(distinct(combo_oscar["name"]))
+```
+
+```{r echo=FALSE}
+combo_oscar <- merge(combo_oscar,title_basic,all=FALSE)
+```
+
+Le variabili contenute in un dato dataset possono avere svariati formati: numerico, carattere, logico. Il comando *typeof* ci restituisce il formato con cui è salvata una determinata variabile. Nel nostro caso, il comando *sapply* effettua questa richiesta per ciascuna variabile contenuta nel nostro dataset *combo_oscar*:
+
+```{r}
+sapply(combo_oscar, typeof)
+```
+
+Una variabile non presente nel dataset ma che invece vogliamo conoscere è l'età di un attore/trice in occasione dell'uscita di un determinato film. Possiamo ottenerla facilmente, sottraendo l'anno di nascita all'anno di uscita del film. Tuttavia, per fare ciò dobbiamo prima cambiare il formato alla variabile *startYear*, memorizzata in formato *character*:
+```{r echo=T, results='hide', warning=FALSE, message=FALSE}
+combo_oscar$startYear <- as.numeric(combo_oscar$startYear)
+sapply(combo_oscar, typeof)
+combo_oscar$age <-  combo_oscar$startYear - combo_oscar$birth_y
+# rapido check: quanti sono i valori "mancanti"?
+sum(is.na(combo_oscar$age)==TRUE)
+```
+
+```{r echo=FALSE}
+combo_oscar$age_oscar <-  combo_oscar$oscar_yr - combo_oscar$birth_y
+```
+
+Le variabili, oltre a distinguersi per il formato, si è soliti distinguerle anche in base a quanti valori possono assumere. Se il numero di valori che una determinata variabile può assumere è finito (o comunque è molto limitato), questa variabile si dice categorica, e possiamo ispezionare quali sono i valori che può assumere con il comando *table*:
+
+```{r}
+table(combo_oscar$titleType)
+```
+
+```{r echo=FALSE}
+# some data cleaning
+cols <- paste(c("tconst","name","nconst","category","birthYear","deathYear","knownForTitles","oscar_no","oscar_yr","award","movie","age","birth_pl","birth_y","titleType","primaryTitle","originalTitle","startYear","genres","age_oscar"))
+combo_oscar <- combo_oscar[,cols]
+combo_oscar <- distinct(combo_oscar)
+combo_oscar <- combo_oscar %>% group_by(name,primaryTitle) %>% mutate(count = n())
+#table(combo_oscar$count)
+combo_oscar$aux <- 1
+combo_oscar <- combo_oscar %>% group_by(name,primaryTitle) %>% mutate(ticker = cumsum(aux))
+combo_oscar <- combo_oscar[combo_oscar$ticker==1,]
+#nrow(distinct(combo_oscar["name"]))
+```
+
+Uniamo infine le info contenute nel dataset sulle *nominations* al nostro dataset principale:
+```{r echo=T, results='hide', warning=FALSE, message=FALSE}
+combo_oscar_nominees <- merge(combo_oscar,nominees,all.x=TRUE)
+```
+
+Un pacchetto che rende la manipolazione dei dati estremamente più semplice è **tidyverse**. *Tidyverse* è una collezione di *packages* (dplyr, ggplot, etc.) con in comune una logica e grammatica tendenzialmente più semplice e intuitiva di quella sottostante **base R** (il pacchetto utilizzato per default da R).
+Usiamo *tidyverse* per creare una variabile "dummy" pari a 1 se il film è stato nominato oppure ha vinto, e 0 altrimenti: 
+
+```{r}
+combo_oscar_nominees <- combo_oscar_nominees %>% mutate(nominated = ifelse(is.na(winner)==F,1,0))
+combo_oscar_nominees <- combo_oscar_nominees %>% mutate(awarded = ifelse(winner=="True",1,0))
+table(combo_oscar_nominees$nominated)
+table(combo_oscar_nominees$awarded)
+```
+
+Sostanzialmente stiamo chiedendo di creare una variabile il cui valore dipende dal valore di una variabile già esistente. Un altro modo per farlo è il seguente:
+```{r}
+combo_oscar_nominees$nominated <- 0
+combo_oscar_nominees$nominated[is.na(combo_oscar_nominees$winner)==F] <- 1
+table(combo_oscar_nominees$nominated)
+```
+
+Un'operazione molto utile quando si analizzano dei dati consiste nel calcolare "statistiche riassuntive" (per es. media, minimo, massimo) per "gruppo", ossia per ciascun sottoinsieme di osservazioni con determinate caratteristiche. Per esempio, se vogliamo calcolare l'anno di "debutto", ossia a quando risale il primo film girato da un determinato attore/trice, calcoleremo una nuova variabile (*mutate*) il cui valore corrisponde al minimo di *startYear* calcolato per il sottoinsieme di film girati da ciascun attore/trice:
+
+```{r}
+combo_oscar_nominees <- combo_oscar_nominees %>% group_by(name) %>% mutate(firstmovie = min(startYear,na.rm =TRUE))
+```
+
+```{r echo=FALSE}
+# Finish creating auxiliary variables:
+combo_oscar_nominees$exp <-  combo_oscar_nominees$startYear - combo_oscar_nominees$firstmovie
+combo_oscar_nominees$exp_oscar <-  combo_oscar_nominees$oscar_yr - combo_oscar_nominees$firstmovie
+combo_oscar_nominees$alreadywinner <- 0
+combo_oscar_nominees$alreadywinner[combo_oscar_nominees$startYear>combo_oscar_nominees$oscar_yr] <- 1
+combo_oscar_nominees$sex <- c("Uomini")
+combo_oscar_nominees$sex[combo_oscar_nominees$award=="Best actress"] <- c("Donne")
+combo_oscar_nominees$aux <- 0
+combo_oscar_nominees$aux[combo_oscar_nominees$sex==c("Donne") & combo_oscar_nominees$alreadywinner==1] <- 1
+combo_oscar_nominees <- combo_oscar_nominees %>% group_by(primaryTitle) %>% mutate(womanalreadywinner = max(aux))
+combo_oscar_nominees$aux <- 0
+combo_oscar_nominees$aux[combo_oscar_nominees$sex==c("Uomini") & combo_oscar_nominees$alreadywinner==1] <- 1
+combo_oscar_nominees <- combo_oscar_nominees %>% group_by(primaryTitle) %>% mutate(manalreadywinner = max(aux))
+combo_oscar_nominees$sexnum <- 1
+combo_oscar_nominees$sexnum[combo_oscar_nominees$award=="Best actress"] <- 2
+```
+
+# Step 2: Visualizzazione dei dati
+
+Non c'è dubbio che tra il preparare/manipolare i dati e l'analizzarli, la seconda fase è quella più divertente. Iniziamo con il creare un dataset più semplice contenente info solo sugli attori:
+
+```{r echo=T, results='hide', warning=FALSE, message=FALSE}
+cols <- paste(c("name","sex","age_oscar","exp_oscar","birth_y","birth_pl"))
+onlyactors <- distinct(combo_oscar_nominees[,cols])
+```
+
+Per prima cosa, possiamo visualizzare l'età degli attori/trici nel momento in cui hanno vinto l'Oscar per genere per mezzo di un **istogramma**:
+
+```{r}
+hist(as.numeric(unlist(onlyactors[onlyactors$sex=="Donne","age_oscar"])), col=rgb(1,0,0,0.5), xlab="Età", 
+     ylab="N (numero di attori/trici)", main="Età al momento del primo Oscar" )
+hist(as.numeric(unlist(onlyactors[onlyactors$sex=="Uomini","age_oscar"])), col=rgb(0,0,1,0.5), add=T)
+legend("topright", legend=c("Donne","Uomini"), col=c(rgb(1,0,0,0.5), 
+                                                     rgb(0,0,1,0.5)), pt.cex=2, pch=15 )
+```
+
+Qual'è stato l'attore/trice premiato/a più giovane e a che età? Ancora una volta possiamo utilizzare *tidyverse*, in particolare il comando *summarize*:
+
+```{r echo=T, results='hide', warning=FALSE, message=FALSE}
+#onlyactors %>% group_by(sex) %>% summarise(average = mean(age_oscar))
+onlyactors %>% group_by(sex) %>% summarise(youngest = min(age_oscar))
+onlyactors <- onlyactors %>% group_by(sex) %>% mutate(youngest = min(age_oscar))
+print(onlyactors[onlyactors$youngest==onlyactors$age_oscar,"name"])
+print(distinct(combo_oscar_nominees[combo_oscar_nominees$name=="Adrien Brody"|combo_oscar_nominees$name=="Marlee Matlin","movie"]))
+```
+
+```{r echo=FALSE}
+# ancillary:
+onlyactors$cohort <- c("1860-1900")
+onlyactors$cohort[onlyactors$birth_y>=1900 & onlyactors$birth_y<1920 & is.na(onlyactors$birth_y)==F] <- c("1900-1920")
+onlyactors$cohort[onlyactors$birth_y>=1920 & onlyactors$birth_y<1940 & is.na(onlyactors$birth_y)==F] <- c("1920-1940")
+onlyactors$cohort[onlyactors$birth_y>=1940 & onlyactors$birth_y<1960 & is.na(onlyactors$birth_y)==F] <- c("1940-1960")
+onlyactors$cohort[onlyactors$birth_y>=1960 & onlyactors$birth_y<1980 & is.na(onlyactors$birth_y)==F] <- c("1960-1980")
+onlyactors$cohort[onlyactors$birth_y>=1980 & onlyactors$birth_y<2000 & is.na(onlyactors$birth_y)==F] <- c("1980-2000")
+```
+
+Dato che i nostri dati spaziano oltre un secolo di cinematografia, possiamo verificare se in passato era più facile vincere un Oscar da giovani. Calcoliamo dunque l'età media al momento dell'Oscar in base a quando sono nati gli attori/trici, e successivamente ci avvaliamo di **ggplot** per realizzare un **grafico a barre**:
+
+```{r}
+df <- onlyactors %>% group_by(sex,cohort) %>% summarise(average_age_oscar = mean(age_oscar))
+ggplot(data=df, aes(x=cohort, y=average_age_oscar, fill=sex)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  xlab("Anno di nascita")+ 
+  ylab("Età al momento del primo Oscar")
+```
+
+Quindi per gli uomini l'età media alla quale si vinceva il primo Oscar è andata calando nel corso degli anni, mentre per le donne è dapprima calata, poi aumentata durante gli anni '20-'60 e poi successivamente tornata a calare.
+
+Possiamo inoltre ispezionare i paesi da cui provengono gli attori/trici premiati/e con maggiore frequenza:
+```{r}
+df <- onlyactors %>% group_by(birth_pl) %>% summarise(count = n())
+df <- df[order(-df$count),]
+head(df,10)
+```
+
+Facciamo a questo punto un passo indietro per ricordarci che nel nostro dataset abbiamo a disposizione tutti, ma proprio tutti, i film, documentari, cortometraggi, etc., realizzati dai nostri vincitori/trici di premio Oscar, non soltanto i film con cui li hanno vinti. 
+Vediamo dunque per cominciare come se la sono cavata le nostre star durante la carriera. Per esempio, in quale fase della vita sono in media maggiormente "attivi"?
+
+```{r echo=T, results='hide', warning=FALSE, message=FALSE}
+df <- combo_oscar_nominees %>% group_by(sex,age) %>% summarise(count_movie = n())
+df <- df[df$age>15 & df$age<85 & is.na(df$age)==F,]
+ggplot(data=df, aes(x=age, y=count_movie, fill=sex)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  xlab("Età")+ 
+  ylab("N (numero di produzioni per anno di età)")
+```
+
+E l'attore/trice in generale più attivo/a nella storia di Hollywood?
+```{r echo=T, results='hide', warning=FALSE, message=FALSE}
+df <- combo_oscar_nominees %>% group_by(name) %>% summarise(count_movie = n())
+onlyactors <- merge(onlyactors,df)
+setorder(setDT(onlyactors %>%  group_by(sex) %>% top_n(1, count_movie)), -count_movie)[, head(.SD, 5L), keyby = sex]
+
+```
+
+```{r echo=FALSE}
+img1<-readJPEG("susiesarandon.jpg")
+img2<-readJPEG("jamesstewart.jpg")
+plot(1, type="n", xlim=c(100, 200), ylim=c(300, 350),xlab="",ylab="")
+par(xaxt='n')
+par(yaxt='n')
+image <- as.raster(matrix(0:1, ncol = 2, nrow = 1))
+rasterImage(img1,100, 300, 150, 350)
+rasterImage(img2,150, 300, 200, 350)
+```
+
+Quante di queste produzioni sono film e quanti invece altro (per es. cortometraggi, videogiochi, etc.)?
+```{r}
+df <- combo_oscar_nominees %>% group_by(name,titleType) %>% summarise(count_movie_40 = sum(age<40,na.rm=T))
+df <- df[df$name=="Susan Sarandon"|df$name=="James Stewart",]
+ggplot(data=df, aes(x=titleType, y=count_movie_40, fill=name)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  xlab("Età")+ 
+  ylab("Numero di produzioni")
+```
+
+Susan Sarandon sarà pur l'attrice più "produttiva", se si contano tutti i tipi di prodotti che attori/trici realizzano, ma qual'è l'attrice con il maggior numero di nomination (ehh si, lo sapete già)?
+```{r}
+df <- combo_oscar_nominees %>% group_by(name) %>% summarise(count_nomin = sum(nominated))
+onlyactors <- merge(onlyactors,df)
+setorder(setDT(onlyactors %>%  group_by(sex) %>% top_n(1, count_nomin)), -count_nomin)[, head(.SD, 5L), keyby = sex]
+```
+
+Può essere interessante capire come evolve la produzione di ciascun attore/trice prima e dopo aver vinto un Oscar. Vediamo un attimo. Costruiamo un dataset semplificato che riporta l'attività di ciascun artista per ciascun anno della sua carriera utilizzando il già visto utile comando *summarise*. Successivamente costruiamo una variabile che ci dice per ciascun artista e anno, quanti anni mancano/quanti anni sono passati rispetto all'anno dell'Oscar. Infine, calcoliamo in media per uomini e donne il numero di produzioni che hanno realizzato cinque anni prima di vincere l'Oscar, quattro, ..., l'anno prima, e poi ancora, l'anno dopo, ..., e così via. 
+
+```{r}
+df <- combo_oscar_nominees %>% group_by(name,startYear) %>% summarise(count_movie = n(),count_nomin = sum(nominated), sexnum= mean(sexnum), oscar_yr = mean(oscar_yr))
+df$newtime <- df$startYear - df$oscar_yr
+df <- df[df$newtime >=-5 & df$newtime<=5 & is.na(df$newtime)==F,] 
+df <- df %>%  group_by(sexnum,newtime) %>% summarise(count_movie = mean(count_movie),count_nomin = mean(count_nomin))
+df$sex <- c("Uomini")
+df$sex[df$sexnum==2] <- c("Donne")
+ggplot(data=df, aes(x=newtime, y=count_movie, fill=sex)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  scale_x_continuous(name="Anni rispetto al (primo) Oscar", limits=c(-5, 5))
+```
+
+Uno si aspetterebbe di osservare un aumento della produzione cinematografica proprio a ridosso del premio Oscar, e successivamente una riduzione (come a dire, gli artisti si godono un po' di meritato riposo dopo aver vinto l'Oscar), seguita magari da una ripresa in termini di intensità nella produzione cinematografica. Dai dati si vede tuttavia che se è vero che post-Oscar gli artisti diventano per qualche anno "meno attivi", è altrettanto vero che questa riduzione di attività si osserva già qualche anno prima di vincerel'Oscar.
+
+Ora, IMDb è soprattutto un dataset di recensioni. Diamo dunque un'occhiata anche a quelle. Per prima cosa, si dice spesso che gli appassionati di videogiochi tendono a essere più generosi con le loro recensioni: è vero? La risposta è: tendenzialmente si.
+
+```{r echo=T, results='hide', warning=FALSE, message=FALSE}
+combo_oscar_nominees_rat <- merge(combo_oscar_nominees,title_rating,all.x=TRUE)
+combo_oscar_nominees_rat %>% group_by(titleType) %>% summarise(averagereview = mean(averageRating,na.rm=T),countreview=mean(numVotes,na.rm=T))
+df <- combo_oscar_nominees_rat %>% group_by(titleType,startYear) %>% summarise(averagereview = mean(averageRating,na.rm=T),countreview=mean(numVotes,na.rm=T))
+```
+
+Un altro aspetto da non sottovalutare è il fatto che le recensioni su IMDb sono diventate un fenomeno di massa soltanto in tempi relativamente recenti:
+```{r}
+df <- ts(df[df$titleType=="movie" & df$startYear<=2020,paste(c("averagereview","countreview"))],start=1905)
+autoplot(df)
+```
+
+Dal grafico in alto tuttavia si vede come seppure il numero di recensioni sia aumentato, la recensione media è rimasta costante.
+
+Avendo a disposizione la recensione "media" per ciascun film, possiamo infine calcolare di quanto sono più alte le recensioni nel caso di film che hanno vinto una nomination o Oscar:
+```{r echo=T, results='hide', warning=FALSE, message=FALSE}
+combo_oscar_nominees_rat$winner[is.na(combo_oscar_nominees_rat$winner)==T] <- c("Not nominated")
+combo_oscar_nominees_rat$nominatedlabel <- c("Not nominated")
+combo_oscar_nominees_rat$nominatedlabel[combo_oscar_nominees_rat$nominated==1] <- c("Nominated")
+combo_oscar_nominees_rat %>% group_by(sex,nominatedlabel) %>% summarise(averagereview = mean(averageRating,na.rm=T),countreview=mean(numVotes,na.rm=T))
+combo_oscar_nominees_rat %>% group_by(sex,winner) %>% summarise(averagereview = mean(averageRating,na.rm=T),countreview=mean(numVotes,na.rm=T))
+```
+
+# Step 3: Analisi di previsione
+La parte conclusiva della nostra analisi consiste nell'implementazione di un semplice esercizio di **previsione**. In particolar modo, siamo interessati a prevedere la probabilità di vincere un premio Oscar sulla base delle informazioni a disposizione su ciascun attore/trice e film. Ci avvaliamo di una **random forest**, ossia di una tecnica di **machine learning** che senza entrare troppo nel dettaglio sostanzialmente ha come obiettivo quello di raggruppare i dati in gruppi quanto più dissimili tra di loro (e simili internamente) ai fini di formulare una previsione (più semplice all'interno di gruppi maggiormente omogenei).
+
+
+```{r echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+ # data preparation - do not show
+combo_oscar_nominees_rat <- merge(combo_oscar_nominees,title_rating,all.x=TRUE)
+
+combo_oscar_nominees_rat <- combo_oscar_nominees_rat[order(combo_oscar_nominees_rat$name,combo_oscar_nominees_rat$startYear),]
+
+combo_oscar_nominees_rat$aux <- 1
+combo_oscar_nominees_rat <- combo_oscar_nominees_rat %>% group_by(name) %>% mutate(counter = cumsum(aux))
+combo_oscar_nominees_rat$movie <- 0
+combo_oscar_nominees_rat$movie[combo_oscar_nominees_rat$titleType=="movie"] <- 1
+combo_oscar_nominees_rat <- combo_oscar_nominees_rat %>% group_by(name) %>% mutate(counter_movie = cumsum(movie))
+
+combo_oscar_nominees_rat <- combo_oscar_nominees_rat %>% group_by(name) %>% mutate(counter_nomin = cumsum(nominated))
+
+combo_oscar_nominees_rat$productivity <- combo_oscar_nominees_rat$counter/combo_oscar_nominees_rat$age
+
+combo_oscar_nominees_rat$cohort <- c("1860-1900")
+combo_oscar_nominees_rat$cohort[combo_oscar_nominees_rat$startYear>=1900 & combo_oscar_nominees_rat$startYear<1920 & is.na(combo_oscar_nominees_rat$startYear)==F] <- c("1900-1920")
+combo_oscar_nominees_rat$cohort[combo_oscar_nominees_rat$startYear>=1920 & combo_oscar_nominees_rat$startYear<1940 & is.na(combo_oscar_nominees_rat$startYear)==F] <- c("1920-1940")
+combo_oscar_nominees_rat$cohort[combo_oscar_nominees_rat$startYear>=1940 & combo_oscar_nominees_rat$startYear<1960 & is.na(combo_oscar_nominees_rat$startYear)==F] <- c("1940-1960")
+combo_oscar_nominees_rat$cohort[combo_oscar_nominees_rat$startYear>=1960 & combo_oscar_nominees_rat$startYear<1980 & is.na(combo_oscar_nominees_rat$startYear)==F] <- c("1960-1980")
+combo_oscar_nominees_rat$cohort[combo_oscar_nominees_rat$startYear>=1980 & combo_oscar_nominees_rat$startYear<2000 & is.na(combo_oscar_nominees_rat$startYear)==F] <- c("1980-2000")
+
+df <- combo_oscar_nominees_rat
+df <- subset(combo_oscar_nominees_rat,select=c("name","awarded","age","exp","sexnum","startYear","movie","genres","womanalreadywinner","manalreadywinner","cohort","birth_pl","counter","counter_movie","counter_nomin","productivity","averageRating"))
+
+# keep only movies up to the oscar winning one:
+df$awarded[df$awarded!=1|is.na(df$awarded)==T] <- 0
+df$aux1 <- df$counter*df$awarded
+df$aux1[df$aux1==0] <- 1000
+df <- df %>% group_by(name) %>% mutate(aux2 = min(aux1))
+df <- df[df$counter<=df$aux2,]
+df <- subset(df,select=-c(aux1,aux2))
+
+#length(unique(df$genres))
+#length(unique(df$birth_pl))
+
+df <- df %>% separate(genres, c("aux1", "aux2", "aux3"), ",")
+df$action <- 0
+df$action[df$aux1=="Action"|df$aux2=="Action"|df$aux3=="Action"] <- 1
+df$comedy <- 0
+df$comedy[df$aux1=="Comedy"|df$aux2=="Comedy"|df$aux3=="Comedy"] <- 1
+df$drama <- 0
+df$drama[df$aux1=="Drama"|df$aux2=="Drama"|df$aux3=="Drama"] <- 1
+df$crime <- 0
+df$crime[df$aux1=="Crime"|df$aux2=="Crime"|df$aux3=="Crime"] <- 1
+df <- subset(df,select=-c(aux1,aux2,aux3,name))
+
+df$country <- c("USA")
+df$country[df$birth_pl==c("England")|df$birth_pl==c("Wales")] <- c("UK")
+df$country[df$birth_pl==c("Italy")|df$birth_pl==c("Belgium")|df$birth_pl==c("France")|df$birth_pl==c("Switzerland")|df$birth_pl==c("Sweden")|df$birth_pl==c("Germany")|df$birth_pl==c("Austria")|df$birth_pl==c("Japan")|df$birth_pl==c("Israel")] <- c("OECD (non ex-USSR")
+df$country[df$birth_pl==c("Australia")|df$birth_pl==c("New Zealand")|df$birth_pl==c("Canada")] <- c("AUS/NZL/CAN")
+df$country[df$birth_pl==c("South Africa")|df$birth_pl==c("India")|df$birth_pl==c("Russia")|df$birth_pl==c("Hungary")|df$birth_pl==c("Poland")] <- c("Others")
+```
+
+Selezioniamo le variabili che ci interessano e che vogliamo utilizzare per "prevedere" l'*outcome* (ossia, *awarded*=1 se il film in questione ha vinto l'Oscar, e 0 viceversa):
+
+```{r}
+# df <- combo_oscar_nominees_rat
+# df <- subset(combo_oscar_nominees_rat,select=c("name","awarded","age","exp","sexnum","startYear","movie","genres","womanalreadywinner","manalreadywinner","cohort","birth_pl","counter","counter_movie","counter_nomin","productivity","averageRating"))
+df <- na.omit(df)
+df$awarded <- as.factor(df$awarded)
+vars <- c("awarded","age","exp","movie","womanalreadywinner","manalreadywinner","cohort","country","counter","counter_movie","counter_nomin","productivity","averageRating","drama","comedy","crime")
+dfwomen <- df[df$sexnum==2,vars]
+dfmen <- df[df$sexnum==1,vars]
+
+sapply(dfwomen,typeof)
+```
+
+Facciamo girare l'algoritmo su due subset del dataset, uno per gli attori e uno per le attrici:
+
+```{r}
+sample <- sample.split(dfwomen$awarded, SplitRatio = .75)
+train <- subset(dfwomen, sample == TRUE)
+test  <- subset(dfwomen, sample == FALSE)
+
+rfwomen <- randomForest(
+  awarded ~ .,
+  data=train,
+  importance = TRUE
+)
+```
+
+
+```{r echo=FALSE}
+sample <- sample.split(dfmen$awarded, SplitRatio = .75)
+train <- subset(dfmen, sample == TRUE)
+test  <- subset(dfmen, sample == FALSE)
+
+rfmen <- randomForest(
+  awarded ~ .,
+  data=train,
+  importance = TRUE
+)
+```
+
+E visualizziamo i risultati. L'errore di previsione è circa il 3%, di poco inferiore per gli uomini che per le donne. Le variabili che influenzano maggiormente l'accuratezza del modello sono molto simili tra uomini e donne. Queste sono il numero di nomination ricevute fino a quel momento (*counter_nomin*), il numero di film girati fino a quel momento (*counter_movie*) e il rating ricevuto dal film. Per le donne l'esperienza, ossia il numero di anni in attività, sembra contare di più dell'età, mentre per gli uomini conta più l'età. Infine la tipologia di film (se una commedia, un film drammatico o un giallo) aiuta maggiormente a prevedere la probabilità per gli uomini di vincere un Oscar che non per le donne. 
+
+```{r}
+print(rfwomen)
+varImpPlot(rfwomen,n.var=15,type=1)
+
+print(rfmen)
+varImpPlot(rfmen,n.var=15,type=1)
+```
+
+Ci sono alcune cose che potevamo indovinare, anche senza analizzare i dati, altre, invece, che decisamente non ci aspettavamo! L'analisi empirica dei dati è sempre il modo migliore per espandere la propria conoscenza, perché spesso ci rivela cose che non conoscevamo, o per le quali avevamo un'aspettativa opposta! 
